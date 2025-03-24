@@ -4,7 +4,8 @@ import diskcache as dc
 from gemba.gpt_api import GptApi
 from gemba.gemba_mqm_utils import TEMPLATE_GEMBA_MQM, apply_template, parse_mqm_answer
 from gemba.gemba_esa import TEMPLATE_GEMBA_ESA_ERROR_SPANS, TEMPLATE_GEMBA_ESA_RANKING
-from gemba.prompt import prompts, validate_number
+from gemba.prompt import prompts, validate_number, create_multicand_prompt
+import asyncio
 
 
 def get_gemba_scores(source, hypothesis, source_lang, target_lang, method, model):
@@ -36,3 +37,38 @@ def get_gemba_scores(source, hypothesis, source_lang, target_lang, method, model
         raise Exception(f"Method {method} not supported.")
 
     return list(pd.DataFrame(answers)['answer'])
+
+
+def get_gemba_scores_multicand(
+        df, method, model,
+        additional_translation_in: int = 0,
+        additional_score_in: int = 0,
+        additional_score_out: int = 0,
+        use_ref: bool = False
+):
+    """
+    Args:
+        df: Dataframe with columns [langs,src,ref,mt,score,mt2,score2,mt3,score3,mt4,score4,mt5,score5,mt6,score6]
+    """
+
+    assert method == "GEMBA-DA-MULTICAND"
+
+    df["prompt"] = df.apply(
+        lambda x: create_multicand_prompt(
+            data=x, additional_score_in=additional_score_in,
+            additional_score_out=additional_score_out,
+            additional_translation_in=additional_translation_in,
+            use_ref=use_ref),
+        axis=1
+    )
+
+    cache = dc.Cache(
+        f'cache/{model}_{method}_{additional_translation_in}_{additional_score_in}_{additional_score_out}_{use_ref}',
+        expire=None, size_limit=int(10e10), cull_limit=0,
+        eviction_policy='none'
+    )
+    gptapi = GptApi()
+    parse_answer = prompts[method]["validate_answer"]
+    answers = asyncio.run(gptapi.bulk_request(df, model, parse_answer, cache=cache, max_tokens=500))
+
+    return answers
