@@ -6,7 +6,8 @@ import logging
 from termcolor import colored
 from datetime import datetime
 import openai
-import tqdm
+from tqdm.asyncio import tqdm
+import asyncio
 
 
 # class for calling OpenAI API and handling cache
@@ -18,15 +19,18 @@ class GptApi:
             assert "OPENAI_AZURE_KEY" in os.environ, "OPENAI_AZURE_KEY not found in environment"
 
             # Azure API access
-            self.client = openai.AzureOpenAI(
+            self.client = openai.AsyncOpenAI(
                 api_key=os.environ["OPENAI_AZURE_KEY"],
                 azure_endpoint=os.environ["OPENAI_AZURE_ENDPOINT"],
-                api_version="2023-07-01-preview"
+                api_version="2023-07-01-preview",
+                timeout=6000
             )
         elif "OPENAI_API_KEY" in os.environ:
             # OpenAI API access
-            self.client = openai.OpenAI(
-                api_key=os.environ["OPENAI_API_KEY"]
+            self.client = openai.AsyncOpenAI(
+                api_key=os.getenv("OPENAI_API_KEY"),
+                base_url=os.getenv("OPENAI_BASE_URL"),
+                timeout=6000
             )
         else:
             raise Exception("OPENAI_API_KEY or OPENAI_AZURE_KEY not found in environment")
@@ -34,13 +38,13 @@ class GptApi:
         logging.getLogger().setLevel(logging.CRITICAL)  # in order to suppress all these HTTP INFO log messages
 
     # answer_id is used for determining if it was the top answer or how deep in the list it was
-    def request(self, prompt, model, parse_response, temperature=0, answer_id=-1, cache=None, max_tokens=None):
+    async def request(self, prompt, model, parse_response, temperature=0, answer_id=-1, cache=None, max_tokens=None):
         request = {"model": model, "temperature": temperature, "prompt": prompt}
 
         if request in cache and cache[request] is not None and len(cache[request]) > 0:
             answers = cache[request]
         else:
-            answers = self.request_api(prompt, model, temperature, max_tokens)
+            answers = await self.request_api(prompt, model, temperature, max_tokens)
             cache[request] = answers
 
         # there is no valid answer
@@ -62,13 +66,14 @@ class GptApi:
             answer = parse_response(full_answer)
             if self.verbose or temperature > 0:
                 print(f"Answer (t={temperature}): " + colored(answer, "yellow") + " (" + colored(full_answer, "blue") + ")", file=sys.stderr)
-            if answer is None:
+            if answer is None and finish_reason == "stop":
                 continue
             parsed_answers.append(
                 {
                     "temperature": temperature,
                     "answer_id": answer_id,
-                    "answer": answer,
+                    "full_answer": full_answer,
+                    "answer": answer if finish_reason != "length" else None,
                     "prompt": prompt,
                     "finish_reason": finish_reason,
                     "model": model,
@@ -77,17 +82,17 @@ class GptApi:
 
         # there was no valid answer, increase temperature and try again
         if len(parsed_answers) == 0:
-            return self.request(prompt, model, parse_response, temperature=temperature + 1, answer_id=answer_id, cache=cache)
+            return await self.request(prompt, model, parse_response, temperature=temperature + 1, answer_id=answer_id, cache=cache)
 
         return parsed_answers
 
-    def request_api(self, prompt, model, temperature=0, max_tokens=None):
+    async def request_api(self, prompt, model, temperature=0, max_tokens=None):
         if temperature > 10:
             return []
 
         while True:
             try:
-                response = self.call_api(prompt, model, temperature, max_tokens)
+                response = await self.call_api(prompt, model, temperature, max_tokens)
                 break
             except Exception as e:
                 # response was filtered
@@ -101,7 +106,7 @@ class GptApi:
                 # frequent error is reaching the API limit
                 print(colored("Error, retrying...", "red"), file=sys.stderr)
                 print(e, file=sys.stderr)
-                time.sleep(1)
+                await asyncio.sleep(1)
 
         answers = []
         for choice in response.choices:
@@ -111,7 +116,7 @@ class GptApi:
                 answer = choice.message.content.strip()
             else:
                 answer = choice.text.strip()
-                
+
             # one of the responses didn't finish, we need to request more tokens
             if choice.finish_reason != "stop":
                 if self.verbose:
@@ -119,7 +124,8 @@ class GptApi:
                 print(f"Finish reason: {choice.finish_reason}", file=sys.stderr)
                 if max_tokens is None:
                     return []
-                return self.request_api(prompt, model, temperature=temperature, max_tokens=max_tokens + 200)
+                if max_tokens < 1200:
+                    return await self.request_api(prompt, model, temperature=temperature, max_tokens=max_tokens + 200)
 
             answers.append({
                 "answer": answer,
@@ -132,7 +138,7 @@ class GptApi:
 
         return answers
 
-    def call_api(self, prompt, model, temperature, max_tokens):
+    async def call_api(self, prompt, model, temperature, max_tokens):
         parameters = {
             "temperature": temperature/10,
             "top_p": 1,
@@ -140,7 +146,8 @@ class GptApi:
             "frequency_penalty": 0,
             "presence_penalty": 0,
             "stop": None,
-            "model": model
+            "model": model,
+            "seed": 0
         }
 
         if max_tokens is not None:
@@ -158,12 +165,23 @@ class GptApi:
                 "content": prompt,
             }]
 
-        return self.client.chat.completions.create(**parameters)
-    
-    def bulk_request(self, df, model, parse_mqm_answer, cache, max_tokens=None):
-        answers = []
-        for i, row in tqdm.tqdm(df.iterrows(), total=len(df), file=sys.stderr):
-            prompt = row["prompt"]
-            parsed_answers = self.request(prompt, model, parse_mqm_answer, cache=cache, max_tokens=max_tokens)
-            answers += parsed_answers
-        return answers
+        return await self.client.chat.completions.create(**parameters)
+
+    async def bulk_request(self, df, model, parse_mqm_answer, cache, max_tokens=None):
+        max_concurrent_requests = 400
+        semaphore = asyncio.Semaphore(max_concurrent_requests)  # Limit to x concurrent requests
+
+        async def process_row(index, row):
+            async with semaphore:
+                prompt = row["prompt"]
+                out = await self.request(prompt, model, parse_mqm_answer, cache=cache, max_tokens=max_tokens)
+                return index, out  # Return index to track order
+
+        tasks = [process_row(i, row) for i, row in df.iterrows()]
+        responses = [None] * len(df)
+
+        for result in tqdm(asyncio.as_completed(tasks), total=len(tasks), desc="Processing requests"):
+            index, response = await result
+            responses[index] = response
+
+        return [answer for sublist in responses for answer in sublist]  # Flatten results
