@@ -40,7 +40,7 @@ def validate_number(x, min=0, max=100):
     return None
 
 
-def validate_number_multicand(x, min=0, max=100):
+def validate_number_polygemba(x, min=0, max=100):
     # Remove the "/100" substring in case the answer is in the form 0/100
     x = x.replace(f'/{max}', '')
 
@@ -164,11 +164,14 @@ prompts = {
         "max_tokens": 100},
 
     "GEMBA-DA-POLYCAND": {
-        "validate_answer": lambda x: validate_number_multicand(x)},
+        "validate_answer": lambda x: validate_number_polygemba(x)},
+
+    "GEMBA-DA-POLYIC": {
+        "validate_answer": lambda x: validate_number_polygemba(x)},
 }
 
 
-def create_multicand_prompt(
+def create_polycand_prompt(
         data: pd.Series,
         additional_translation_in: int = 0,
         additional_score_in: int = 0,
@@ -242,6 +245,64 @@ def create_multicand_prompt(
              f'{additional_prompt}' \
              f'{"Now" if additional_score_out == 0 else "Then"} score this translation ' \
              f'(remember to output the final score only at the end of your answer):\n' \
+             f'{target_lang} translation: {data["mt"]}\nScore: '
+
+    return prompt
+
+
+def create_polyic_prompt(
+        data: pd.Series,
+        additional_sample_in: int = 0,
+        use_ref: bool = False
+):
+    """
+
+    Args:
+        data: datapoint containing [langs,src,ref,mt,score,src2,mt2,score2,src3,mt3,score3,src4,mt4,score4,src5,mt5,score5,src6,mt6,score6]
+
+    Returns:
+        prompt
+
+    """
+    assert additional_sample_in <= 5
+
+    source_lang = language_codes[data['langs'].split('/')[-1].split('-')[0]]
+    target_lang = language_codes[data['langs'].split('/')[-1].split('-')[1]]
+
+    additional_prompt = ''
+
+    if additional_sample_in > 0:
+        additional_prompt = '--------------------------------------------------------------\n'
+        if additional_sample_in == 1:
+            additional_prompt += "Below is an example translation along with its score: \n"
+        else:
+            additional_prompt += "Below are some example translations along with their scores: \n"
+
+        for i in range(0, additional_sample_in):
+            sample_source = data[f"src{i+2}"]
+            sample_translation = data[f"mt{i+2}"]
+            sample_score = data[f"score{i+2}"]
+            additional_prompt += f'\nSource: {sample_source}\n' \
+                f'Translation: "{sample_translation}"\nScore: {sample_score}\n'
+
+        additional_prompt += '\n--------------------------------------------------------------\n'
+
+    if use_ref:
+        ref_prompt = f"{target_lang} human reference: {data['ref']}\n"
+    else:
+        ref_prompt = ""
+
+    prompt = f'Score the translation provided at the end of this prompt from {source_lang} to {target_lang} ' \
+             f'{"with respect to human reference " if use_ref else ""}' \
+             f'on a continuous scale from 0 to 100, where a score of zero means "no meaning preserved" ' \
+             f'and score of one hundred means "perfect meaning and grammar". ' \
+             f'Keep your explanation as short as possible. ' \
+             f'Provide the final score at the end of your answer, do not output anything else afterward. \n\n' \
+             f'{additional_prompt}' \
+             f'Now score this translation ' \
+             f'(remember to output the final score only at the end of your answer):\n' \
+             f'{source_lang} source: {data["src"]}\n' \
+             f'{ref_prompt}' \
              f'{target_lang} translation: {data["mt"]}\nScore: '
 
     return prompt
