@@ -168,7 +168,7 @@ class GptApi:
         return await self.client.chat.completions.create(**parameters)
 
     async def bulk_request(self, df, model, parse_mqm_answer, cache, max_tokens=None):
-        max_concurrent_requests = 400
+        max_concurrent_requests = 800
         semaphore = asyncio.Semaphore(max_concurrent_requests)  # Limit to x concurrent requests
 
         async def process_row(index, row):

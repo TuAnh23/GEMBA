@@ -44,14 +44,15 @@ def get_gemba_scores_multicand(
         additional_translation_in: int = 0,
         additional_score_in: int = 0,
         additional_score_out: int = 0,
-        use_ref: bool = False
+        use_ref: bool = False,
+        cache_root_dir: str = "cache"
 ):
     """
     Args:
         df: Dataframe with columns [langs,src,ref,mt,score,mt2,score2,mt3,score3,mt4,score4,mt5,score5,mt6,score6]
     """
 
-    assert method == "GEMBA-DA-MULTICAND"
+    assert method == "GEMBA-DA-POLYCAND"
 
     df["prompt"] = df.apply(
         lambda x: create_multicand_prompt(
@@ -63,7 +64,7 @@ def get_gemba_scores_multicand(
     )
 
     cache = dc.Cache(
-        f'cache/{model}_{method}_{additional_translation_in}_{additional_score_in}_{additional_score_out}_{use_ref}',
+        f'{cache_root_dir}/{model}_{method}_{additional_translation_in}_{additional_score_in}_{additional_score_out}_{use_ref}',
         expire=None, size_limit=int(10e10), cull_limit=0,
         eviction_policy='none'
     )

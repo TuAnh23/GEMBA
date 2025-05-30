@@ -163,7 +163,7 @@ prompts = {
         "validate_answer": lambda x, classes=["No meaning preserved", "Some meaning preserved, but not understandable", "Some meaning preserved and understandable", "Most meaning preserved, minor issues", "Perfect translation"]: parse_classes(x, classes),
         "max_tokens": 100},
 
-    "GEMBA-DA-MULTICAND": {
+    "GEMBA-DA-POLYCAND": {
         "validate_answer": lambda x: validate_number_multicand(x)},
 }
 
